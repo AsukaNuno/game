@@ -44,7 +44,7 @@
 
 <script type="py">
 from pyscript import document
-from pyodide.ffi import create_proxy
+
 
 # ===== recipes.py 相当 =====
 FOODS = ["🍎 りんご", "🥩 肉", "🐟 さかな", "🍄 きのこ", "🍯 はちみつ"]
@@ -100,15 +100,22 @@ def on_reset(event):
 
 # 食材ボタンを動的に生成
 foods_el = document.getElementById("foods")
-for f in FOODS:
+for i, f in enumerate(FOODS):
     btn = document.createElement("button")
     btn.className = "food"
     btn.innerText = f
-    btn.addEventListener("click", create_proxy(on_add(f)))
+    btn.setAttribute("py-click", f"add_{i}")
     foods_el.appendChild(btn)
 
-document.getElementById("loading").style.display = "none"
-document.getElementById("app").style.display = "block"
+for i, f in enumerate(FOODS):
+    def make(food):
+        def h(event):
+            if add_food(food):
+                pot_el.innerText = "  ".join(pot)
+            else:
+                pot_el.innerText = "いっぱい！りょうりしよう🍳"
+        return h
+    globals()[f"add_{i}"] = make(f)
 </script>
 </body>
 </html>
