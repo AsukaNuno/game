@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>メトロノームタワー</title>
+<style>
+  :root{
+    --wood-dark:#5a3a22; --wood:#8a5a33; --cream:#f5e9d0; --ink:#2b1d12;
+    --brass:#d9a441;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#1c1410;overflow:hidden;
+    font-family:"Hiragino Maru Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+    -webkit-user-select:none;user-select:none;touch-action:manipulation;}
+  #wrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;}
+  canvas{background:#bfd8e8;display:block;border-radius:6px;box-shadow:0 0 0 6px var(--wood-dark),0 20px 60px rgba(0,0,0,.6);}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;}
+  .panel{pointer-events:auto;background:var(--cream);color:var(--ink);border:5px solid var(--wood-dark);
+    border-radius:14px;padding:24px 28px;max-width:420px;width:88%;text-align:center;
+    box-shadow:0 12px 40px rgba(0,0,0,.5);}
+  .panel h1{font-size:29px;letter-spacing:2px;margin-bottom:4px;}
+  .panel h2{font-size:21px;margin-bottom:10px;}
+  .panel p{font-size:14px;line-height:1.8;margin-bottom:12px;}
+  .panel .small{font-size:12px;color:#6b5334;}
+  .panel .score{font-size:26px;font-weight:bold;color:#a0651f;margin-bottom:8px;}
+  button{font-family:inherit;font-size:16px;font-weight:bold;color:var(--cream);
+    background:var(--wood);border:3px solid var(--wood-dark);border-radius:10px;
+    padding:10px 22px;cursor:pointer;margin:4px;}
+  button:active{transform:translateY(2px);}
+  .mate{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#fff8ea;}
+  .mate .icon{font-size:26px;}
+  .mate .name{font-size:15px;color:var(--ink);}
+  .mate .desc{font-size:11px;font-weight:normal;color:#6b5334;}
+  .mate.sel{background:var(--brass);}
+  #touch{position:absolute;left:0;right:0;bottom:0;display:none;justify-content:space-between;
+    padding:0 14px 14px;pointer-events:none;}
+  .tbtn{pointer-events:auto;width:64px;height:64px;border-radius:50%;font-size:24px;
+    background:rgba(90,58,34,.75);border:3px solid rgba(245,233,208,.8);color:var(--cream);}
+  #touch .grp{display:flex;gap:12px;}
+  @media (pointer:coarse){#touch{display:flex;}}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="480" height="640"></canvas>
+  <div id="overlay"></div>
+  <div id="touch">
+    <div class="grp"><button class="tbtn" id="tL">◀</button><button class="tbtn" id="tR">▶</button></div>
+    <div class="grp"><button class="tbtn" id="tJ">⤒</button></div>
+  </div>
+</div>
+<script>
+"use strict";
+const cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+const W=480,H=640;
+function fit(){
+  const s=Math.min(innerWidth/W,(innerHeight-(matchMedia("(pointer:coarse)").matches?90:0))/H,1.4);
+  cv.style.width=W*s+"px";cv.style.height=H*s+"px";
+}
+addEventListener("resize",fit);fit();
+
+/* ================= audio ================= */
+let AC=null;
+function audio(){if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();if(AC.state==="suspended")AC.resume();}
+function osc(type,f0,f1,dur,vol){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.type=type;o.frequency.setValueAtTime(f0,AC.currentTime);
+  if(f1)o.frequency.exponentialRampToValueAtTime(f1,AC.currentTime+dur);
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+dur);
+  o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+dur);
+}
+const S={
+  kick:()=>osc("sine",170,42,.16,.34),
+  tick:()=>osc("square",1250,0,.05,.09),
+  jump:()=>osc("triangle",520,760,.1,.1),
+  good:n=>{osc("triangle",660*Math.pow(1.06,Math.min(n,12)),0,.08,.13);
+           setTimeout(()=>osc("triangle",990*Math.pow(1.06,Math.min(n,12)),0,.1,.13),55);},
+  bad:()=>osc("sawtooth",120,70,.2,.2),
+  coin:()=>{osc("triangle",1320,0,.07,.12);setTimeout(()=>osc("triangle",1760,0,.12,.12),60);},
+  stomp:()=>osc("sawtooth",220,60,.2,.24),
+  hurt:()=>osc("sawtooth",150,50,.3,.24),
+  spring:()=>osc("triangle",300,900,.18,.15),
+  crack:()=>{osc("sawtooth",100,35,.18,.28);osc("square",600,150,.08,.1);},
+  clear:()=>{[660,880,1170,1560].forEach((f,i)=>setTimeout(()=>osc("triangle",f,0,.25,.15),i*110));}
+};
+
+/* ================= input ================= */
+const key={L:false,R:false};
+let jumpBufT=0;
+function down(k){audio();
+  if(k==="L")key.L=true;if(k==="R")key.R=true;
+  if(k==="J")jumpBufT=0.12;
+}
+function up(k){if(k==="L")key.L=false;if(k==="R")key.R=false;}
+addEventListener("keydown",e=>{
+  if(e.repeat)return;
+  if(["ArrowLeft","KeyA"].includes(e.code))down("L");
+  if(["ArrowRight","KeyD"].includes(e.code))down("R");
+  if(["Space","ArrowUp","KeyW"].includes(e.code)){down("J");e.preventDefault();}
+});
+addEventListener("keyup",e=>{
+  if(["ArrowLeft","KeyA"].includes(e.code))up("L");
+  if(["ArrowRight","KeyD"].includes(e.code))up("R");
+});
+[["tL","L"],["tR","R"],["tJ","J"]].forEach(([id,k])=>{
+  const b=document.getElementById(id);
+  b.addEventListener("touchstart",e=>{e.preventDefault();down(k);},{passive:false});
+  b.addEventListener("touchend",e=>{e.preventDefault();up(k);},{passive:false});
+  b.addEventListener("mousedown",()=>down(k));
+  b.addEventListener("mouseup",()=>up(k));
+});
+
+/* ================= world ================= */
+const FLOOR_STEP=100,N_PLAT=26,TOP_Y=(N_PLAT+1)*FLOOR_STEP;
+let plats=[];
+function buildTower(){
+  plats=[];let px=W/2;
+  for(let i=0;i<N_PLAT;i++){
+    const y=(i+1)*FLOOR_STEP;
+    const dir=(i%2?1:-1)*(0.7+((i*37)%40)/70);
+    px=Math.max(80,Math.min(W-80,px+dir*150));
+    plats.push({x:px,y,w:126+Math.sin(i*3.7)*22,
+      spring:i%4===2,coin:i%3!==0,mv:i%5===3?1:0,ph:i*1.9});
+  }
+  plats.push({x:W/2,y:TOP_Y,w:W-80,arena:true,ph:0,mv:0});
+}
+function floorOf(y){return Math.max(1,Math.min(100,Math.round(y/TOP_Y*99)+1));}
+
+/* ================= companions ================= */
+const MATES=[
+  {id:0,icon:"🐹",name:"ハムスターのテンポ",desc:"ジャスト判定がゆるい（リズム苦手ならコレ）",win:0.20},
+  {id:1,icon:"🐸",name:"カエルのぴょん太",desc:"空中でもう1回ジャンプできる",win:0.13},
+  {id:2,icon:"🐢",name:"カメののろ吉",desc:"BPMの上昇と共振ゲージがゆっくり",win:0.13},
+];
+let mate=MATES[0];
+
+/* ================= state ================= */
+const P={x:W/2,y:0,vx:0,vy:0,w:26,h:34,onGround:false,ground:null,face:1,
+  hearts:3,inv:0,fallFrom:0,canDouble:false,coyote:0,justJump:false,pierced:false};
+let state="TITLE",phase="CLIMB";
+let bossHP=3,boss=null;
+let sway={on:false,phase:0,amp:0,bpm:70,beatT:-9,accent:false,pulse:0};
+let resonance=0,resonMax=60;
+let camY=0,camLead=220,shake=0,time=0;
+let msg="",msgT=0,combo=0,bestCombo=0,score=0,judgeT=0,judgeTxt="",judgeCol="";
+let parts=[],debris=[];
+
+function swayX(y){return sway.on?Math.sin(sway.phase)*sway.amp*(y/TOP_Y):0;}
+function platX(p){return p.x+(p.mv?Math.sin(time*1.6+p.ph)*58:0)+swayX(p.y);}
+
+function toast(t){msg=t;msgT=3.0;}
+function judge(t,c){judgeTxt=t;judgeCol=c;judgeT=0.7;}
+function puff(x,y,n,col,spd){
+  for(let i=0;i<n;i++){const a=Math.random()*6.28,v=(0.4+Math.random())*spd;
+    parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v+80,t:0.5+Math.random()*0.3,col});}
+}
+
+function startClimb(){
+  buildTower();
+  Object.assign(P,{x:W/2,y:0,vx:0,vy:0,hearts:3,ground:null,inv:0,fallFrom:0});
+  sway.on=false;resonance=0;combo=0;score=0;bestCombo=0;debris=[];parts=[];
+  state="CLIMB";phase="CLIMB";
+  toast("てっぺんまで駆け上がれ！ バネと♪を集めろ！");
+}
+function startBoss(){
+  state="BOSS";phase="BOSS";bossHP=3;debris=[];
+  boss={x:W/2,y:TOP_Y+160,vx:80,mode:"hover",t:0,sx:0,sy:0,tx:0,ty:0,inv:0};
+  toast("ボスあらわる！ 頭をふんで倒せ！");
+}
+function startDescent(){
+  state="DESCENT";phase="DESCENT";
+  sway.on=true;sway.phase=0;sway.amp=0;sway.bpm=70;sway.beatT=-9;
+  resonance=0;resonMax=mate.id===2?135:95;combo=0;debris=[];
+  Object.assign(P,{x:W/2,y:TOP_Y,vx:0,vy:0,hearts:3,ground:null,inv:0,fallFrom:TOP_Y});
+  toast("ジャストジャンプで着地→床をぶち抜け！");
+}
+
+/* ================= overlay ================= */
+const ov=document.getElementById("overlay");
+function panel(html){ov.innerHTML='<div class="panel">'+html+'</div>';}
+function clearPanel(){ov.innerHTML="";}
+function showTitle(){
+  state="TITLE";
+  panel(`
+    <h1>🗼メトロノームタワー</h1>
+    <p class="small">高さ100Fの塔のてっぺんに、悪いトリがいる。<br>倒してしまえば世界は平和…… なはず。</p>
+    <p><b>いっしょに行く仲間をえらぼう</b></p>
+    <div>${MATES.map(m=>`
+      <button class="mate${m.id===mate.id?" sel":""}" data-m="${m.id}">
+        <span class="icon">${m.icon}</span>
+        <span><span class="name">${m.name}</span><br><span class="desc">${m.desc}</span></span>
+      </button>`).join("")}
+    </div>
+    <button id="go">のぼる！</button>
+    <p class="small">←→ / A D：移動　スペース / ↑：ジャンプ</p>
+  `);
+  ov.querySelectorAll(".mate").forEach(b=>b.onclick=()=>{audio();mate=MATES[+b.dataset.m];showTitle();});
+  document.getElementById("go").onclick=()=>{audio();clearPanel();startClimb();};
+}
+function showTwist(){
+  state="CUT";
+  panel(`
+    <h2>……ゴゴゴゴゴ……</h2>
+    <p>天井の仕掛けがはずれた！ 塔がゆっくり揺れはじめる。<br><br>
+    <b>この塔は巨大なメトロノームだったのだ！！</b><br><br>
+    振り子が<b>端にきた瞬間に「カチッ」</b>と鳴る。その瞬間にジャンプすると
+    大ジャンプ＆コンボ、しかも<b>着地で床をぶち抜いて1階下まで突き抜けられる</b>
+    （ジャスト中は落下ノーダメージ）！<br>
+    ズレるとつまずくし、ズレたまま落ちると高さに応じてダメージだ。<br>
+    降りるほど自分の重しでBPMが上がる。上から錘も落ちてくる。<br>
+    共振ゲージが満タンになる前に、1Fのスイッチを止めろ！</p>
+    <button id="go2">急いで降りる！</button>
+  `);
+  document.getElementById("go2").onclick=()=>{audio();clearPanel();startDescent();};
+}
+function showClear(){
+  state="CLEAR";S.clear();
+  const bonus=Math.round((resonMax-resonance)*20);score+=bonus;
+  panel(`
+    <h2>🎉 メトロノーム停止！</h2>
+    <div class="score">SCORE ${score}</div>
+    <p class="small">最大コンボ ×${bestCombo}　残り時間ボーナス +${bonus}</p>
+    <p><b>と、そのとき——遠くで別の塔が揺れはじめた。</b><br>
+    トリが次々と塔を作動させている！ 共振で地面がぐらぐら……<br>
+    このままでは世界がやばい！！！！</p>
+    <p class="small">残りの塔には、べつの仲間たちが待っている——</p>
+    <h2>つづく……！？</h2>
+    <button id="re">もう一度あそぶ</button>
+  `);
+  document.getElementById("re").onclick=()=>{audio();showTitle();};
+}
+function showOver(reason){
+  state="OVER";
+  panel(`
+    <h2>💥 ${reason}</h2>
+    <p>${reason==="共振が限界に……！"?"塔の揺れが世界に広がってしまった……":"主人公はちからつきた……"}</p>
+    <button id="re">リトライ</button><button id="ti">タイトルへ</button>
+  `);
+  document.getElementById("re").onclick=()=>{
+    audio();clearPanel();
+    if(phase==="DESCENT")startDescent();
+    else if(phase==="BOSS"){buildTower();startBoss();Object.assign(P,{x:W/2,y:TOP_Y,vx:0,vy:0,hearts:3,ground:null,fallFrom:TOP_Y});}
+    else startClimb();
+  };
+  document.getElementById("ti").onclick=()=>{audio();showTitle();};
+}
+
+/* ================= physics ================= */
+const GRAV=2100,MOVE=280,JUMP=780,JUMP_STUMBLE=290,SPRING=1150;
+function onBeat(){
+  if(!sway.on)return true;
+  const period=60/sway.bpm,since=time-sway.beatT,until=sway.beatT+period-time;
+  return Math.min(since,Math.max(0,until))<mate.win;
+}
+function hurt(n,why){
+  if(P.inv>0)return;
+  P.hearts-=n;P.inv=1.3;shake=12;S.hurt();combo=0;
+  puff(P.x,P.y+16,10,"#c94f3d",160);
+  if(why)toast(why);
+  if(P.hearts<=0)showOver("ハートがなくなった……");
+}
+function doJump(){
+  const good=onBeat();
+  if(good){
+    P.vy=JUMP;combo++;bestCombo=Math.max(bestCombo,combo);
+    if(sway.on){
+      score+=10*combo;S.good(combo);judge("ジャスト！","#e8b84b");
+      puff(P.x,P.y,8,"#e8b84b",140);
+      if(combo>0&&combo%8===0&&P.hearts<3){P.hearts++;toast("コンボボーナス！ ❤回復");}
+    }else S.jump();
+  }else{
+    P.vy=JUMP_STUMBLE;combo=0;S.bad();judge("ズレた…","#c94f3d");
+    puff(P.x,P.y,5,"#8a8a8a",90);shake=Math.max(shake,4);
+  }
+  P.justJump=good;P.pierced=false;
+  P.onGround=false;P.ground=null;P.fallFrom=P.y;P.coyote=0;
+  P.canDouble=mate.id===1;
+}
+function stepPlayer(dt){
+  const ax=(key.L?-1:0)+(key.R?1:0);
+  P.vx=ax*MOVE;if(ax)P.face=ax;
+  if(jumpBufT>0){
+    jumpBufT-=dt;
+    if(P.onGround||P.coyote>0){jumpBufT=0;doJump();}
+    else if(P.canDouble){jumpBufT=0;P.canDouble=false;P.vy=JUMP*0.92;S.good(2);puff(P.x,P.y,6,"#7ec850",120);}
+  }
+  if(P.onGround&&P.ground){
+    const now=P.ground.p?platX(P.ground.p):0;
+    P.x+=now-P.ground.lastX;P.ground.lastX=now;
+  }else P.coyote-=dt;
+  P.vy-=GRAV*dt;
+  P.x+=P.vx*dt;
+  const prevY=P.y;
+  P.y+=P.vy*dt;
+  if(P.y>P.fallFrom)P.fallFrom=P.y;
+  const woff=swayX(P.y);
+  P.x=Math.max(22+woff,Math.min(W-22+woff,P.x));
+  const wasOn=P.onGround;
+  P.onGround=false;
+  if(P.vy<=0){
+    for(const p of plats){
+      if(p.broken)continue;
+      const px2=platX(p);
+      if(prevY>=p.y&&P.y<=p.y&&Math.abs(P.x-px2)<p.w/2+P.w/2-4){
+        land(p);break;
+      }
+    }
+    if(!P.onGround&&P.y<=0)land(null);
+  }
+  if(wasOn&&!P.onGround&&!P.ground)P.coyote=0.08;
+  if(P.inv>0)P.inv-=dt;
+}
+function breakFloor(p){
+  p.broken=true;p.breakT=0;
+  p.holeC=Math.max(p.x-p.w/2+34,Math.min(p.x+p.w/2-34,P.x-(platX(p)-p.x)));
+  S.crack();shake=Math.max(shake,6);judge("床ぶち抜き！","#c08a52");
+  puff(P.x,p.y,12,"#8a5a33",170);
+  const L=p.x-p.w/2,R=p.x+p.w/2,hl=p.holeC-32,hr=p.holeC+32;
+  if(hl-L>=26)plats.push({x:(L+hl)/2,y:p.y,w:hl-L,mv:0,ph:0,noLabel:true});
+  if(R-hr>=26)plats.push({x:(hr+R)/2,y:p.y,w:R-hr,mv:0,ph:0,noLabel:true});
+}
+function land(p){
+  const y=p?p.y:0;
+  if(p&&sway.on&&P.justJump&&!P.pierced&&!p.arena&&!p.spring){
+    breakFloor(p);P.pierced=true;return; // fall through — one floor only
+  }
+  const fall=P.fallFrom-y;
+  P.y=y;P.vy=0;P.onGround=true;P.coyote=0.08;P.canDouble=false;
+  P.ground={p,lastX:p?platX(p):0};
+  if(p&&p.spring){P.vy=SPRING;P.onGround=false;P.ground=null;
+    P.justJump=true;P.pierced=false;S.spring();
+    puff(P.x,y,10,"#7ec850",180);P.fallFrom=y;judge("ビヨーン！","#7ec850");return;}
+  if(!P.justJump){
+    const dmg=fall<170?0:fall<320?1:fall<470?2:3;
+    if(dmg>0)hurt(dmg,"落下ダメージ！ -"+dmg+"❤");
+    else if(fall>40)puff(P.x,y,4,"#c08a52",70);
+  }else if(fall>40){puff(P.x,y,6,"#e8b84b",90);}
+  if(p&&p.coin){p.coin=false;score+=100;S.coin();judge("+100","#e8b84b");
+    puff(platX(p),y+30,6,"#e8b84b",120);}
+  P.fallFrom=y;P.justJump=false;P.pierced=false;
+}
+
+/* ================= boss ================= */
+function stepBoss(dt){
+  boss.t+=dt;
+  if(boss.inv>0)boss.inv-=dt;
+  const baseY=TOP_Y+170;
+  if(boss.mode==="hover"){
+    boss.x+=boss.vx*dt;
+    if(boss.x<80||boss.x>W-80)boss.vx*=-1;
+    boss.y=baseY+Math.sin(boss.t*3.5)*20;
+    if(boss.t>1.7){boss.mode="aim";boss.t=0;boss.sx=boss.x;boss.sy=boss.y;boss.tx=P.x;boss.ty=P.y+16;}
+  }else if(boss.mode==="aim"){
+    if(boss.t>0.4){boss.mode="swoop";boss.t=0;}
+  }else if(boss.mode==="swoop"){
+    const k=Math.min(1,boss.t/0.42);
+    boss.x=boss.sx+(boss.tx-boss.sx)*k;
+    boss.y=boss.sy+(boss.ty-boss.sy)*k;
+    if(k>=1){boss.mode="rise";boss.t=0;boss.sx=boss.x;boss.sy=boss.y;}
+  }else{
+    const k=Math.min(1,boss.t/0.7);
+    boss.y=boss.sy+(baseY-boss.sy)*k;
+    if(k>=1){boss.mode="hover";boss.t=0;boss.vx=(P.x<boss.x?-1:1)*110;}
+  }
+  const dx=P.x-boss.x;
+  if(Math.abs(dx)<34&&P.y>boss.y+8&&P.y<boss.y+44&&P.vy<0){
+    if(boss.inv>0){P.vy=430;return;} // bounce off, no damage while blinking
+    P.vy=600;bossHP--;boss.inv=1.5;S.stomp();shake=9;
+    puff(boss.x,boss.y,12,"#7a68b3",180);
+    boss.mode="rise";boss.t=0;boss.sx=boss.x;boss.sy=boss.y;
+    toast(bossHP>0?`いいぞ！ あと ${bossHP} 回！`:"やった！？");
+    if(bossHP<=0)setTimeout(showTwist,700);
+  }else if(boss.inv<=0&&Math.abs(dx)<30&&Math.abs(P.y+17-boss.y)<32){
+    hurt(1);P.vy=Math.max(P.vy,320);P.x+=dx>0?28:-28;
+  }
+}
+
+/* ================= metronome / descent ================= */
+function stepSway(dt){
+  if(!sway.on)return;
+  const f=floorOf(P.y);
+  sway.bpm=70+(100-f)*(mate.id===2?0.8:1.35);
+  sway.amp=Math.min(sway.amp+dt*30,100);
+  const period=60/sway.bpm;
+  sway.phase+=dt*Math.PI/period;
+  const inc=dt*Math.PI/period;
+  const m=((sway.phase-Math.PI/2)%Math.PI+Math.PI)%Math.PI;
+  if(m<inc){
+    sway.accent=!sway.accent;
+    sway.accent?S.kick():S.tick();
+    sway.pulse=1;sway.beatT=time;
+    if(sway.accent&&state==="DESCENT"){ // drop a weight near the player
+      const x=Math.max(40,Math.min(W-40,P.x+(Math.random()*280-140)));
+      debris.push({x,y:P.y+520,vy:0});
+    }
+  }
+  sway.pulse=Math.max(0,sway.pulse-dt*5);
+  resonance+=dt;
+  if(resonance>=resonMax)showOver("共振が限界に……！");
+}
+function stepDebris(dt){
+  for(const d of debris){
+    d.vy+=1400*dt;d.y-=d.vy*dt;
+    if(Math.abs(d.x-P.x)<22&&Math.abs(d.y-(P.y+17))<26){d.dead=true;hurt(1,"錘が直撃！");}
+    if(d.y<P.y-500)d.dead=true;
+  }
+  debris=debris.filter(d=>!d.dead);
+}
+function stepParts(dt){
+  for(const p of parts){p.t-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy-=600*dt;}
+  parts=parts.filter(p=>p.t>0);
+}
+
+/* ================= drawing ================= */
+function wy(y){return H-120-(y-camY);}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();}
+function drawBG(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  const prog=Math.min(1,P.y/TOP_Y);
+  g.addColorStop(0,`rgb(${150-prog*60},${190-prog*40},225)`);
+  g.addColorStop(1,"#e8ddc4");
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="rgba(90,58,34,.16)";
+  for(let i=0;i<3;i++){
+    const bx=60+i*180,sw=(state==="CLEAR")?Math.sin(time*2+i)*14:0;
+    ctx.save();ctx.translate(bx,H-60);ctx.rotate(sw*0.01);
+    ctx.fillRect(-18,-260-P.y*0.05,36,260+P.y*0.05);ctx.restore();
+  }
+  ctx.fillStyle="rgba(255,255,255,.5)";
+  for(let i=0;i<4;i++){
+    const cy=(i*160+((camY*0.4)%160))%H;
+    ctx.beginPath();ctx.ellipse((i*137)%W,cy,46,14,0,0,7);ctx.fill();
+  }
+}
+function drawWeight(x,y,s){
+  ctx.fillStyle="#d9a441";
+  ctx.beginPath();ctx.moveTo(x-10*s,y+13*s);ctx.lineTo(x+10*s,y+13*s);
+  ctx.lineTo(x+15*s,y-13*s);ctx.lineTo(x-15*s,y-13*s);ctx.closePath();ctx.fill();
+  ctx.fillStyle="#a0651f";ctx.fillRect(x-15*s,y-3*s,30*s,4*s);
+}
+function drawTower(){
+  ctx.fillStyle="#7a4e2b";
+  for(let y=Math.max(0,camY-100);y<camY+H;y+=30){
+    const off=swayX(y);
+    ctx.fillRect(off,wy(y)-30,16,30);
+    ctx.fillRect(W-16+off,wy(y)-30,16,30);
+  }
+  ctx.fillStyle="#6d8a4e";ctx.fillRect(0,wy(0),W,H);
+  ctx.fillStyle="#8aa963";ctx.fillRect(0,wy(0),W,10);
+  if(sway.on||state==="CLEAR"){
+    const sx2=W/2;
+    ctx.fillStyle="#933";rr(sx2-34,wy(0)-26,68,26,6);
+    ctx.fillStyle=state==="CLEAR"?"#4a4":"#d9a441";
+    ctx.beginPath();ctx.arc(sx2,wy(0)-26,14,0,7);ctx.fill();
+    ctx.fillStyle="#2b1d12";ctx.font="bold 11px sans-serif";ctx.textAlign="center";
+    ctx.fillText(state==="CLEAR"?"STOP":"SWITCH",sx2,wy(0)+16);
+  }
+  for(const p of plats){
+    const sy2=wy(p.y),px2=platX(p);
+    if(sy2<-140||sy2>H+140)continue;
+    if(p.broken){
+      if(p.breakT<0.8){
+        const fx=p.holeC+(px2-p.x),fy=sy2+p.breakT*p.breakT*520;
+        ctx.globalAlpha=1-p.breakT/0.8;
+        ctx.save();ctx.translate(fx,fy);ctx.rotate(p.breakT*2);
+        ctx.fillStyle="#8a5a33";ctx.fillRect(-32,-7,64,14);
+        ctx.restore();ctx.globalAlpha=1;
+      }
+      continue;
+    }
+    ctx.fillStyle=p.spring?"#5f8a3a":"#8a5a33";rr(px2-p.w/2,sy2,p.w,14,5);
+    ctx.fillStyle=p.spring?"#8fc060":"#c08a52";rr(px2-p.w/2,sy2,p.w,5,3);
+    if(p.spring){ctx.fillStyle="#dff0c8";ctx.font="bold 11px sans-serif";ctx.textAlign="center";
+      ctx.fillText("バネ",px2,sy2+11);}
+    if(p.coin){const cy3=sy2-24+Math.sin(time*4+p.ph)*4;
+      ctx.fillStyle="#e8b84b";
+      ctx.beginPath();ctx.arc(px2,cy3,8,0,7);ctx.fill();
+      ctx.fillStyle="#a0651f";ctx.font="bold 10px sans-serif";ctx.textAlign="center";
+      ctx.fillText("♪",px2,cy3+4);}
+    if(!p.arena&&!p.noLabel){ctx.fillStyle="rgba(43,29,18,.5)";ctx.font="bold 10px sans-serif";ctx.textAlign="center";
+      ctx.fillText(floorOf(p.y)+"F",px2-p.w/2-2,sy2-4);}
+  }
+  if(state==="CLIMB"||state==="BOSS"){
+    const cy2=wy(TOP_Y+240);
+    if(cy2>-60){
+      ctx.fillStyle="#5a3a22";ctx.fillRect(swayX(TOP_Y+240),cy2,W,20);
+      for(let i=0;i<6;i++)drawWeight(60+i*72+swayX(TOP_Y+240),cy2+34,0.7);
+    }
+  }
+  for(const d of debris)drawWeight(d.x,wy(d.y),1);
+  for(const p of parts){
+    ctx.globalAlpha=Math.min(1,p.t*2.5);
+    ctx.fillStyle=p.col;ctx.fillRect(p.x-3,wy(p.y)-3,6,6);
+    ctx.globalAlpha=1;
+  }
+}
+function drawPlayer(){
+  if(P.inv>0&&Math.floor(time*12)%2)return;
+  const x=P.x,y=wy(P.y);
+  ctx.fillStyle="#3d6fb0";rr(x-13,y-30,26,26,8);
+  ctx.fillStyle="#f2c98f";ctx.beginPath();ctx.arc(x,y-38,11,0,7);ctx.fill();
+  ctx.fillStyle="#2b1d12";ctx.beginPath();ctx.arc(x+P.face*4,y-40,2,0,7);ctx.fill();
+  ctx.fillStyle="#c94f3d";rr(x-13,y-52,26,8,3);
+  ctx.font="20px sans-serif";ctx.textAlign="center";
+  ctx.fillText(mate.icon,x-P.face*24,y-40+Math.sin(time*4)*4);
+}
+function drawBoss(){
+  if(state!=="BOSS")return;
+  const x=boss.x,y=wy(boss.y);
+  if(boss.inv>0&&Math.floor(time*14)%2){ // invincibility blink
+    ctx.textAlign="center";ctx.font="14px sans-serif";
+    ctx.fillText("\ud83d\udc26 "+"\u2764".repeat(Math.max(0,bossHP)),x,y-34);
+    return;
+  }
+  ctx.save();
+  if(boss.mode==="aim"&&Math.floor(time*10)%2)ctx.globalAlpha=.55;
+  ctx.fillStyle="#5b4a8a";ctx.beginPath();ctx.ellipse(x,y,26,20,0,0,7);ctx.fill();
+  ctx.fillStyle="#7a68b3";
+  const fl=Math.sin(time*10)*0.2;
+  ctx.beginPath();ctx.ellipse(x-26,y-4,16,7,-.5-fl,0,7);ctx.fill();
+  ctx.beginPath();ctx.ellipse(x+26,y-4,16,7,.5+fl,0,7);ctx.fill();
+  ctx.fillStyle="#e8b84b";ctx.beginPath();
+  ctx.moveTo(x,y+4);ctx.lineTo(x+(P.x>boss.x?14:-14),y);ctx.lineTo(x,y-4);ctx.fill();
+  ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(x-6,y-8,5,0,7);ctx.arc(x+6,y-8,5,0,7);ctx.fill();
+  ctx.fillStyle="#2b1d12";ctx.beginPath();ctx.arc(x-6,y-8,2,0,7);ctx.arc(x+6,y-8,2,0,7);ctx.fill();
+  ctx.restore();
+  ctx.textAlign="center";ctx.font="14px sans-serif";
+  ctx.fillText("🐦 "+"❤".repeat(Math.max(0,bossHP)),x,y-34);
+}
+function drawHUD(){
+  const f=floorOf(P.y);
+  ctx.fillStyle="rgba(43,29,18,.85)";rr(10,10,116,58,8);
+  ctx.fillStyle="#f5e9d0";ctx.font="bold 22px sans-serif";ctx.textAlign="center";
+  ctx.fillText(f+"F",68,34);
+  ctx.font="14px sans-serif";
+  ctx.fillText("❤".repeat(Math.max(0,P.hearts))+"♡".repeat(Math.max(0,3-P.hearts)),68,56);
+  ctx.fillStyle="rgba(43,29,18,.85)";rr(W-116,10,106,30,8);
+  ctx.fillStyle="#f5e9d0";ctx.font="bold 13px sans-serif";
+  ctx.fillText(sway.on?"♩="+Math.round(sway.bpm):"SCORE "+score,W-63,30);
+  if(sway.on){
+    // === beat bar: the pendulum lane ===
+    const bx=W/2-90,bw=180,by=14;
+    ctx.fillStyle="rgba(43,29,18,.85)";rr(bx-10,by-6,bw+20,34,8);
+    ctx.fillStyle="rgba(232,184,75,.25)";
+    rr(bx-6,by,20,20,5);rr(bx+bw-14,by,20,20,5); // hit zones at ends
+    ctx.strokeStyle="#6b5334";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(bx,by+10);ctx.lineTo(bx+bw,by+10);ctx.stroke();
+    const mx=bx+bw/2+Math.sin(sway.phase)*(bw/2-8);
+    ctx.fillStyle=onBeat()?"#e8b84b":"#f5e9d0";
+    ctx.beginPath();ctx.arc(mx,by+10,onBeat()?9:6,0,7);ctx.fill();
+    ctx.fillStyle="#f5e9d0";ctx.font="9px sans-serif";
+    ctx.fillText("端で♪＝ジャンプ！",W/2,by+30);
+    // resonance
+    ctx.fillStyle="rgba(43,29,18,.85)";rr(bx-10,52,bw+20,14,7);
+    const k=resonance/resonMax;
+    ctx.fillStyle=k>0.75?"#c94f3d":"#d9a441";rr(bx-6,55,(bw+12)*k,8,4);
+    // combo + score
+    if(combo>=2){
+      ctx.fillStyle="#e8b84b";
+      ctx.font="bold "+(20+Math.min(combo,15))+"px sans-serif";
+      ctx.fillText("♪×"+combo,W/2,110);
+    }
+    ctx.fillStyle="rgba(43,29,18,.85)";rr(W-116,44,106,24,8);
+    ctx.fillStyle="#f5e9d0";ctx.font="bold 12px sans-serif";
+    ctx.fillText("SCORE "+score,W-63,61);
+  }
+  if(judgeT>0){
+    ctx.globalAlpha=Math.min(1,judgeT*3);
+    ctx.fillStyle=judgeCol;ctx.font="bold 20px sans-serif";ctx.textAlign="center";
+    ctx.fillText(judgeTxt,P.x,wy(P.y)-70-(0.7-judgeT)*40);
+    ctx.globalAlpha=1;
+  }
+  if(sway.pulse>0.4){
+    ctx.strokeStyle=`rgba(232,184,75,${(sway.pulse-0.4)*1.3})`;
+    ctx.lineWidth=8;ctx.strokeRect(4,4,W-8,H-8);
+  }
+  if(msgT>0){
+    ctx.fillStyle="rgba(43,29,18,.9)";ctx.font="bold 15px sans-serif";
+    const tw=ctx.measureText(msg).width;
+    rr(W/2-tw/2-16,H-92,tw+32,34,10);
+    ctx.fillStyle="#f5e9d0";ctx.textAlign="center";ctx.fillText(msg,W/2,H-69);
+  }
+}
+
+/* ================= loop ================= */
+let last=performance.now();
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min(0.033,(now-last)/1000);last=now;time+=dt;
+  if(msgT>0)msgT-=dt;
+  if(judgeT>0)judgeT-=dt;
+  if(shake>0)shake=Math.max(0,shake-dt*34);
+  stepParts(dt);
+  if(state==="CLIMB"||state==="BOSS"||state==="DESCENT"){
+    stepPlayer(dt);stepSway(dt);
+    for(const p of plats)if(p.broken)p.breakT+=dt;
+    if(state==="DESCENT")stepDebris(dt);
+    if(state==="BOSS")stepBoss(dt);
+    if(state==="CLIMB"&&P.onGround&&P.ground&&P.ground.p&&P.ground.p.arena)startBoss();
+    if(state==="DESCENT"&&P.onGround&&P.y<=2&&Math.abs(P.x-W/2)<52){sway.on=false;showClear();}
+  }
+  const lead=state==="DESCENT"?300:220;
+  camLead+=(lead-camLead)*Math.min(1,dt*3);
+  const target=Math.max(0,P.y-camLead+80);
+  camY+=(target-camY)*Math.min(1,dt*7);
+  ctx.save();
+  const z=1+sway.pulse*0.012;
+  ctx.translate(W/2,H/2);ctx.scale(z,z);ctx.translate(-W/2,-H/2);
+  if(shake>0)ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+  if(sway.on){ctx.translate(W/2,H);ctx.rotate(Math.sin(sway.phase)*0.03);ctx.translate(-W/2,-H);}
+  drawBG();drawTower();drawBoss();drawPlayer();
+  ctx.restore();
+  if(state!=="TITLE")drawHUD();
+}
+buildTower();
+showTitle();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
