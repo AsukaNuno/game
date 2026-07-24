@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数当てゲーム</title>
+  <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+  <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 480px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #f5f5f5;
+    }
+    h1 { font-size: 1.4rem; }
+    #panel {
+      background: #fff;
+      padding: 24px;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    }
+    input {
+      font-size: 1rem;
+      padding: 8px;
+      width: 100px;
+    }
+    button {
+      font-size: 1rem;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    #log { margin-top: 16px; line-height: 1.8; }
+    .hint { color: #333; }
+    .win { color: #0a7; font-weight: bold; }
+    #loading { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>数当てゲーム</h1>
+  <div id="panel">
+    <p id="loading">Python を読み込み中...</p>
+    <div id="game" style="display:none">
+      <p>1〜100 の数を当ててください。</p>
+      <input type="number" id="guess" min="1" max="100">
+      <button id="btn" py-click="check">判定</button>
+      <button id="reset" py-click="reset">リセット</button>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script type="py">
+from pyscript import document
+import random
+
+answer = random.randint(1, 100)
+count = 0
+
+document.getElementById("loading").style.display = "none"
+document.getElementById("game").style.display = "block"
+
+def log(msg, cls="hint"):
+    div = document.createElement("div")
+    div.className = cls
+    div.innerText = msg
+    document.getElementById("log").prepend(div)
+
+def check(event):
+    global count
+    box = document.getElementById("guess")
+    if box.value == "":
+        return
+    n = int(box.value)
+    count += 1
+    if n < answer:
+        log(f"{n} → もっと大きい ({count}回目)")
+    elif n > answer:
+        log(f"{n} → もっと小さい ({count}回目)")
+    else:
+        log(f"正解！ {answer} でした（{count}回）", "win")
+    box.value = ""
+
+def reset(event):
+    global answer, count
+    answer = random.randint(1, 100)
+    count = 0
+    document.getElementById("log").innerHTML = ""
+    log("リセットしました")
+  </script>
+</body>
+</html>
