@@ -1,1 +1,2 @@
-https://asukanuno.github.io/game/から飛べます。
+https://asukanuno.github.io/game/
+から飛べます。
